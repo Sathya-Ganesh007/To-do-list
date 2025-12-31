@@ -1,11 +1,19 @@
 import { redirect } from "next/navigation";
-
 import { createClient } from "@/lib/supabase/server";
-import { InfoIcon } from "lucide-react";
-import { FetchDataSteps } from "@/components/tutorial/fetch-data-steps";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  CheckCircle2,
+  ListTodo,
+  Clock,
+  CalendarDays,
+  ArrowRight,
+} from "lucide-react";
 import { Suspense } from "react";
+import Link from "next/link";
 
-async function UserDetails() {
+async function getUser() {
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
 
@@ -13,30 +21,184 @@ async function UserDetails() {
     redirect("/auth/login");
   }
 
-  return JSON.stringify(data.claims, null, 2);
+  return data.claims as { email?: string } | null;
+}
+
+async function UserGreeting() {
+  const user = await getUser();
+  const email = user?.email ?? "User";
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-3">
+        <CheckCircle2 className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold">
+            Welcome back, {email}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Here's a quick overview of your productivity today.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function AccountCard() {
+  const user = await getUser();
+  const email = user?.email ?? "User";
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Account</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div>
+          <div className="text-xs text-muted-foreground">Signed in as</div>
+          <div className="font-medium break-all">{email}</div>
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs text-muted-foreground">Plan</div>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">Free</Badge>
+            <span className="text-xs text-muted-foreground">
+              Upgrade from the home page
+            </span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function ProtectedPage() {
   return (
-    <div className="flex-1 w-full flex flex-col gap-12">
-      <div className="w-full">
-        <div className="bg-accent text-sm p-3 px-5 rounded-md text-foreground flex gap-3 items-center">
-          <InfoIcon size="16" strokeWidth={2} />
-          This is a protected page that you can only see as an authenticated
-          user
-        </div>
+    <div className="flex-1 w-full flex flex-col gap-8">
+      <Suspense
+        fallback={
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="h-6 w-6 text-primary" />
+              <div>
+                <h1 className="text-2xl md:text-3xl font-bold">
+                  Welcome back...
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  Loading your dashboard...
+                </p>
+              </div>
+            </div>
+          </div>
+        }
+      >
+        <UserGreeting />
+      </Suspense>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card className="cursor-pointer hover:shadow-md transition-shadow">
+          <Link href="/protected/tasks">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Tasks today</CardTitle>
+              <ListTodo className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">8</div>
+              <p className="text-xs text-muted-foreground">
+                5 completed · 3 remaining
+              </p>
+            </CardContent>
+          </Link>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">
+              Focus sessions
+            </CardTitle>
+            <Clock className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">3</div>
+            <p className="text-xs text-muted-foreground">
+              2h 15m focused time today
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">This week</CardTitle>
+            <CalendarDays className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">24</div>
+            <p className="text-xs text-muted-foreground">
+              Tasks completed this week
+            </p>
+          </CardContent>
+        </Card>
       </div>
-      <div className="flex flex-col gap-2 items-start">
-        <h2 className="font-bold text-2xl mb-4">Your user details</h2>
-        <pre className="text-xs font-mono p-3 rounded border max-h-32 overflow-auto">
-          <Suspense>
-            <UserDetails />
-          </Suspense>
-        </pre>
-      </div>
-      <div>
-        <h2 className="font-bold text-2xl mb-4">Next steps</h2>
-        <FetchDataSteps />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Today&apos;s tasks</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                A sample list to show how your dashboard can look.
+              </p>
+            </div>
+            <Badge variant="secondary">Demo</Badge>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-3 text-sm mb-4">
+              <li className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-primary" />
+                  Plan today&apos;s priorities
+                </span>
+                <span className="text-xs text-muted-foreground">High</span>
+              </li>
+              <li className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  Review completed tasks
+                </span>
+                <span className="text-xs text-muted-foreground">Medium</span>
+              </li>
+              <li className="flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
+                  Schedule work for tomorrow
+                </span>
+                <span className="text-xs text-muted-foreground">Low</span>
+              </li>
+            </ul>
+            <Button asChild variant="outline" className="w-full">
+              <Link href="/protected/tasks">
+                View All Tasks
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Suspense
+          fallback={
+            <Card>
+              <CardHeader>
+                <CardTitle>Account</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <div className="text-xs text-muted-foreground">Loading...</div>
+              </CardContent>
+            </Card>
+          }
+        >
+          <AccountCard />
+        </Suspense>
       </div>
     </div>
   );
