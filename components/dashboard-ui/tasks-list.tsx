@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Link from "next/link";
+import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+
 import { createClient } from "@/lib/supabase/client";
 import {
   Plus,
   Search,
   X,
-  LayoutGrid,
   Check,
   Trash2,
   ArrowUpCircle,
@@ -16,6 +16,9 @@ import {
   List as ListIcon,
   Calendar,
   History,
+  Bell,
+  Share2,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,7 +46,7 @@ interface Task {
 
 const PRIORITY = {
   low: {
-    color: "text-blue-400 bg-blue-400/10 border-blue-400/20",
+    color: "text-slate-400 bg-slate-400/10 border-slate-400/20",
     label: "Low",
   },
   medium: {
@@ -51,7 +54,7 @@ const PRIORITY = {
     label: "Medium",
   },
   high: {
-    color: "text-rose-400 bg-rose-400/10 border-rose-400/20",
+    color: "text-rose-500 bg-rose-500/10 border-rose-500/20",
     label: "High",
   },
 };
@@ -67,6 +70,10 @@ export default function TasksList({ user }: { user: any }) {
     new Date().toISOString().split("T")[0],
   );
   const [isAdding, setIsAdding] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [undoTask, setUndoTask] = useState<Task | null>(null);
+  const [quickAddTitle, setQuickAddTitle] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // New task form state
   const [newTask, setNewTask] = useState<{
@@ -82,19 +89,70 @@ export default function TasksList({ user }: { user: any }) {
   useEffect(() => {
     if (!user?.id) return;
     const supabase = createClient();
-    supabase
-      .from("tasks")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
-        if (error?.message.includes("API key"))
-          alert("Supabase API Key Error: Check your .env.local");
-        if (data)
-          setTasks(
-            data.map((t: any) => ({ ...t, createdAt: new Date(t.created_at) })),
-          );
-      });
+
+    // Initial fetch
+    const fetchTasks = async () => {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error?.message.includes("API key")) {
+        alert("Supabase API Key Error: Check your .env.local");
+      }
+      if (data) {
+        setTasks(
+          data.map((t: any) => ({ ...t, createdAt: new Date(t.created_at) })),
+        );
+      }
+    };
+
+    fetchTasks();
+
+    // Real-time Subscription (Fix for "Real-time Sync")
+    const channel = supabase
+      .channel("tasks-real-time")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "tasks",
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            const newTask = {
+              ...payload.new,
+              createdAt: new Date(payload.new.created_at),
+            } as Task;
+            setTasks((prev) => [
+              newTask,
+              ...prev.filter((t) => t.id !== payload.new.id),
+            ]);
+          } else if (payload.eventType === "UPDATE") {
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === payload.new.id
+                  ? {
+                      ...t,
+                      ...payload.new,
+                      createdAt: new Date(payload.new.created_at),
+                    }
+                  : t,
+              ),
+            );
+          } else if (payload.eventType === "DELETE") {
+            setTasks((prev) => prev.filter((t) => t.id !== payload.old.id));
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user?.id]);
 
   const handleAction = async (
@@ -103,20 +161,34 @@ export default function TasksList({ user }: { user: any }) {
   ) => {
     const supabase = createClient();
     if (type === "add") {
-      if (!newTask.title.trim()) return;
+      const title = quickAddTitle.trim() || newTask.title.trim();
+      if (!title) return;
+
       const tempId = crypto.randomUUID();
+      const taskData = {
+        title: title,
+        description: quickAddTitle.trim() ? "" : newTask.description,
+        priority: quickAddTitle.trim() ? "medium" : newTask.priority,
+      };
+
       const task = {
         id: tempId,
-        ...newTask,
+        ...taskData,
         completed: false,
         createdAt: new Date(),
       };
+
       setTasks([task, ...tasks]);
       setIsAdding(false);
       setNewTask({ title: "", description: "", priority: "medium" });
+
       const { data } = await supabase
         .from("tasks")
-        .insert({ user_id: user.id || user.sub, ...newTask, completed: false })
+        .insert({
+          user_id: user.id || user.sub,
+          ...taskData,
+          completed: false,
+        })
         .select()
         .single();
       if (data)
@@ -130,12 +202,21 @@ export default function TasksList({ user }: { user: any }) {
     } else if (type === "toggle" && id) {
       const task = tasks.find((t) => t.id === id);
       if (!task) return;
+      const willBeCompleted = !task.completed;
       setTasks(
-        tasks.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t)),
+        tasks.map((t) =>
+          t.id === id ? { ...t, completed: willBeCompleted } : t,
+        ),
       );
+
+      if (willBeCompleted) {
+        setUndoTask(task);
+        setTimeout(() => setUndoTask(null), 5000);
+      }
+
       await supabase
         .from("tasks")
-        .update({ completed: !task.completed })
+        .update({ completed: willBeCompleted })
         .eq("id", id);
     } else if (type === "delete" && id) {
       if (!confirm("Delete this task?")) return;
@@ -164,75 +245,199 @@ export default function TasksList({ user }: { user: any }) {
     return matchesFilter && matchesSearch && matchesTimeframe;
   });
 
+  // Task grouping logic
+  const groupedTasks = {
+    today: filteredTasks.filter(
+      (t) => new Date(t.createdAt).toDateString() === new Date().toDateString(),
+    ),
+    tomorrow: filteredTasks.filter((t) => {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return new Date(t.createdAt).toDateString() === tomorrow.toDateString();
+    }),
+    upcoming: filteredTasks.filter((t) => {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return new Date(t.createdAt) > tomorrow;
+    }),
+    past: filteredTasks.filter((t) => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      return new Date(t.createdAt) < today;
+    }),
+  };
+
+  const getSmartDateLabel = (date: Date) => {
+    const d = new Date(date);
+    const today = new Date();
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    if (d.toDateString() === today.toDateString())
+      return <span className="text-emerald-400">Today</span>;
+    if (d.toDateString() === tomorrow.toDateString())
+      return <span className="text-blue-400">Tomorrow</span>;
+    if (d < today && d.toDateString() !== today.toDateString())
+      return <span className="text-rose-500">Overdue</span>;
+
+    return `In ${Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))} days`;
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
+
+      if (e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        setIsAdding(true);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+      if (e.key === "/") {
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleUndo = async () => {
+    if (!undoTask) return;
+    const supabase = createClient();
+    setTasks(
+      tasks.map((t) => (t.id === undoTask.id ? { ...t, completed: false } : t)),
+    );
+    await supabase
+      .from("tasks")
+      .update({ completed: false })
+      .eq("id", undoTask.id);
+    setUndoTask(null);
+  };
+
   const counts = {
     pending: tasks.filter((t) => !t.completed).length,
     done: tasks.filter((t) => t.completed).length,
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 font-sans">
-      <div className="flex items-center justify-between mb-12">
-        <div className="flex items-center gap-4">
-          <div className="p-2 bg-[#1a1a1a] -lg border border-white/5 shadow-xl">
-            <LayoutGrid className="h-5 w-5 text-gray-400" />
-          </div>
-          <nav className="text-sm font-medium">
-            <Link
-              href="/"
-              className="text-gray-500 hover:text-white transition-colors"
-            >
-              Home
-            </Link>
-            <span className="mx-2 text-gray-700">/</span>
-            <Link
-              href="/dashboard"
-              className="text-gray-300 hover:text-white transition-colors"
-            >
-              Dashboard
-            </Link>
-          </nav>
-        </div>
-      </div>
-
+    <div className="min-h-screen bg-[#0a0a0a] text-white p-3 md:p-8 font-sans">
       <div className="max-w-6xl mx-auto space-y-10">
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-8">
-          <div className="space-y-2">
-            <h1 className="text-4xl md:text-5xl font-bold">
-              Task{" "}
-              <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
-                Dashboard
-              </span>
-            </h1>
-            <p className="text-gray-500">
-              You have{" "}
-              <span className="text-white font-semibold">
-                {counts.pending} pending
-              </span>{" "}
-              tasks.
-            </p>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex flex-col md:flex-row md:items-center gap-6">
+            <div className="relative h-16 w-16 group/progress">
+              {/* Background Glow */}
+              <div className="absolute inset-0 bg-indigo-500/10 blur-xl rounded-full opacity-0 group-hover/progress:opacity-100 transition-opacity" />
+
+              <svg className="h-16 w-16 -rotate-90 relative z-10">
+                <circle
+                  cx="32"
+                  cy="32"
+                  r="28"
+                  stroke="currentColor"
+                  strokeWidth="5"
+                  fill="transparent"
+                  className="text-white/5"
+                />
+                <motion.circle
+                  cx="32"
+                  cy="32"
+                  r="28"
+                  stroke="currentColor"
+                  strokeWidth="5"
+                  fill="transparent"
+                  strokeDasharray="175.9"
+                  initial={{ strokeDashoffset: 175.9 }}
+                  animate={{
+                    strokeDashoffset:
+                      175.9 - 175.9 * (counts.done / (tasks.length || 1)),
+                  }}
+                  className={`${
+                    counts.done === tasks.length && tasks.length > 0
+                      ? "text-emerald-500"
+                      : "text-indigo-500"
+                  }`}
+                  strokeLinecap="round"
+                  style={{ filter: "drop-shadow(0 0 4px currentColor)" }}
+                />
+              </svg>
+              <div className="absolute inset-0 flex items-center justify-center relative z-10">
+                <span
+                  className={`text-[13px] font-black transition-colors ${
+                    counts.done === tasks.length && tasks.length > 0
+                      ? "text-emerald-400"
+                      : "text-white"
+                  }`}
+                >
+                  {Math.round((counts.done / (tasks.length || 1)) * 100)}%
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h1 className="text-2xl md:text-3xl font-black tracking-tight">
+                Task{" "}
+                <span className="bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+                  Dashboard
+                </span>
+              </h1>
+              <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-wider">
+                <div className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 text-emerald-400 -full border border-emerald-500/20">
+                  <Check className="h-3 w-3" /> {counts.done} Done
+                </div>
+                <div className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 text-amber-400 -full border border-amber-500/20">
+                  <History className="h-3 w-3" /> {counts.pending} Pending
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="flex gap-4">
-            <div className="relative md:w-80">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-600" />
+
+          <div className="flex items-center gap-3">
+            <div className="relative md:w-64">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-600" />
               <Input
-                placeholder="Search tasks..."
-                className="bg-[#121212] border-white/5 pl-12 h-14 -xl"
+                ref={searchRef}
+                placeholder="Search tasks... (/)"
+                className="bg-[#121212] border-white/5 pl-11 h-11 -xl focus:ring-indigo-500/20 text-sm"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
             <Button
               onClick={() => setIsAdding(!isAdding)}
-              className="h-14 px-8 bg-white text-black hover:bg-gray-200 -xl font-bold"
+              className="hidden md:flex h-11 px-6 bg-indigo-600 hover:bg-indigo-500 text-white -xl font-bold text-sm shadow-xl shadow-indigo-500/20 transition-all hover:scale-105 active:scale-95 group"
             >
               {isAdding ? (
-                <X className="mr-2 h-5 w-5" />
+                <X className="mr-2 h-4 w-4" />
               ) : (
-                <Plus className="mr-2 h-5 w-5" />
+                <Plus className="mr-2 h-4 w-4 transition-transform group-hover:rotate-90" />
               )}{" "}
               {isAdding ? "Cancel" : "New Task"}
             </Button>
           </div>
+        </div>
+
+        {/* Quick Add Inline */}
+        <div className="relative group">
+          <div className="absolute left-5 top-1/2 -translate-y-1/2">
+            <Plus className="h-4 w-4 text-gray-500 group-focus-within:text-indigo-500 transition-colors" />
+          </div>
+          <Input
+            placeholder="Quick add task and press Enter..."
+            value={quickAddTitle}
+            onChange={(e) => setQuickAddTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && quickAddTitle.trim()) {
+                handleAction("add");
+                setQuickAddTitle("");
+              }
+            }}
+            className="h-11 pl-12 bg-[#121212]/50 border-white/5 -xl text-sm focus:bg-[#161616] focus:border-indigo-500/30 transition-all"
+          />
         </div>
 
         <div className="flex flex-col sm:flex-row items-center justify-between py-6 border-b border-white/5 gap-6">
@@ -323,29 +528,19 @@ export default function TasksList({ user }: { user: any }) {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
-          <div className="flex gap-8 text-sm font-bold">
-            <div className="flex items-center gap-2 text-emerald-400">
-              <div className="h-2 w-2 -full bg-emerald-500 shadow-lg" />{" "}
-              {counts.done} Done
-            </div>
-            <div className="flex items-center gap-2 text-amber-400">
-              <div className="h-2 w-2 -full bg-amber-500 shadow-lg" />{" "}
-              {counts.pending} Pending
-            </div>
-          </div>
         </div>
 
         {isAdding && (
-          <Card className="bg-[#121212] border-white/5 -3xl animate-in slide-in-from-top-4">
-            <CardContent className="p-8 grid grid-cols-1 md:grid-cols-12 gap-8">
-              <div className="md:col-span-8 gap-6 flex flex-col">
+          <Card className="bg-[#121212] border-white/5 -2xl animate-in slide-in-from-top-4 overflow-hidden">
+            <CardContent className="p-6 grid grid-cols-1 md:grid-cols-12 gap-6">
+              <div className="md:col-span-8 gap-4 flex flex-col">
                 <Input
                   placeholder="Task Title"
                   value={newTask.title}
                   onChange={(e) =>
                     setNewTask({ ...newTask, title: e.target.value })
                   }
-                  className="bg-[#1a1a1a] border-white/10 h-14 text-lg -xl"
+                  className="bg-[#1a1a1a] border-white/10 h-11 text-sm -xl"
                 />
                 <Input
                   placeholder="Description (Optional)"
@@ -353,19 +548,19 @@ export default function TasksList({ user }: { user: any }) {
                   onChange={(e) =>
                     setNewTask({ ...newTask, description: e.target.value })
                   }
-                  className="bg-[#1a1a1a] border-white/10 h-14 -xl"
+                  className="bg-[#1a1a1a] border-white/10 h-11 text-sm -xl"
                 />
               </div>
-              <div className="md:col-span-4 flex flex-col justify-between gap-6">
+              <div className="md:col-span-4 flex flex-col justify-between gap-4">
                 <div className="flex gap-2">
                   {(["low", "medium", "high"] as const).map((p) => (
                     <button
                       key={p}
                       onClick={() => setNewTask({ ...newTask, priority: p })}
-                      className={`flex-1 py-3 -xl text-xs font-black border uppercase ${
+                      className={`flex-1 py-2.5 -xl text-[10px] font-black border uppercase transition-all ${
                         newTask.priority === p
                           ? PRIORITY[p].color + " border-white/10"
-                          : "bg-[#1a1a1a] text-gray-500 border-transparent"
+                          : "bg-[#1a1a1a] text-gray-600 border-transparent"
                       }`}
                     >
                       {PRIORITY[p].label}
@@ -374,7 +569,7 @@ export default function TasksList({ user }: { user: any }) {
                 </div>
                 <Button
                   onClick={() => handleAction("add")}
-                  className="w-full h-14 bg-indigo-600 hover:bg-indigo-500 font-black -xl"
+                  className="w-full h-11 bg-indigo-600 hover:bg-indigo-500 text-sm font-bold -xl shadow-lg shadow-indigo-500/20"
                 >
                   Create Task
                 </Button>
@@ -383,86 +578,315 @@ export default function TasksList({ user }: { user: any }) {
           </Card>
         )}
 
-        <div className="grid gap-4 pb-24">
-          {filteredTasks.length ? (
-            filteredTasks.map((t) => (
-              <div
-                key={t.id}
-                className={`group flex items-center justify-between p-6 bg-[#121212] -3xl border border-white/5 transition-all hover:bg-[#161616] ${
-                  t.completed ? "opacity-40" : ""
-                }`}
-              >
-                <div className="flex items-center gap-6 flex-1 min-w-0">
-                  <Checkbox
-                    checked={t.completed}
-                    onCheckedChange={() => handleAction("toggle", t.id)}
-                    className="h-7 w-7 -full data-[state=checked]:bg-emerald-500 transition-all"
-                  />
-                  <div className="min-w-0">
-                    <h3
-                      className={`text-xl font-bold truncate ${
-                        t.completed
-                          ? "line-through text-gray-600"
-                          : "text-gray-100"
-                      }`}
-                    >
-                      {t.title}
-                    </h3>
-                    {t.description && (
-                      <p className="text-gray-500 text-sm mt-1 truncate max-w-lg">
-                        {t.description}
-                      </p>
-                    )}
-                    <div className="flex gap-4 mt-3">
-                      <Badge
-                        variant="outline"
-                        className={`${
-                          PRIORITY[t.priority].color
-                        } border-none font-black text-[10px] uppercase px-2.5 py-0.5 -full ring-1 ring-inset`}
+        <div className="space-y-12 pb-32">
+          {filteredTasks.length === 0 ? (
+            <div className="text-center py-24 text-gray-500 flex flex-col items-center gap-6 bg-[#121212]/40 -[40px] border border-dashed border-white/5">
+              <div className="p-6 bg-[#1a1a1a] -2xl border border-white/5">
+                {searchQuery ? (
+                  <Search className="h-10 w-10 text-gray-700" />
+                ) : (
+                  <ListIcon className="h-10 w-10 text-indigo-500" />
+                )}
+              </div>
+              <p className="text-xl font-bold max-w-md">
+                {searchQuery
+                  ? `No matches for "${searchQuery}"`
+                  : filter === "completed"
+                    ? "No completed tasks yet. Finish one to see it here 🎯"
+                    : "📝 No tasks yet. Click “New Task” to add one."}
+              </p>
+              {searchQuery && (
+                <Button
+                  variant="link"
+                  onClick={() => setSearchQuery("")}
+                  className="text-indigo-400 font-bold"
+                >
+                  Clear search
+                </Button>
+              )}
+            </div>
+          ) : (
+            Object.entries(groupedTasks).map(([group, tasks]) => {
+              if (tasks.length === 0) return null;
+              return (
+                <div key={group} className="space-y-2">
+                  <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500 flex items-center gap-4">
+                    <span>{group}</span>
+                    <div className="h-px flex-1 bg-white/5" />
+                    <span className="bg-white/5 px-2 py-0.5 -md">
+                      {tasks.length}
+                    </span>
+                  </h3>
+                  <div className="grid gap-3">
+                    {tasks.map((t) => (
+                      <motion.div
+                        layout
+                        key={t.id}
+                        onClick={() => setEditingTask(t)}
+                        className={`group relative overflow-hidden flex items-center justify-between py-4 px-6 bg-[#121212] -xl border border-white/5 transition-all hover:bg-[#161616] hover:border-white/10 cursor-pointer active:scale-[0.99] ${
+                          t.completed ? "opacity-50" : ""
+                        }`}
                       >
-                        {PRIORITY[t.priority].label}
-                      </Badge>
-                      <span className="text-[10px] text-gray-600 font-bold uppercase flex items-center gap-1.5">
-                        <Circle className="h-2 w-2 fill-gray-800" />{" "}
-                        {new Date(t.createdAt).toLocaleDateString(undefined, {
-                          month: "short",
-                          day: "numeric",
-                        })}
-                      </span>
-                    </div>
+                        {/* Priority Border Indicator */}
+                        <div
+                          className={`absolute left-0 top-3 bottom-3 w-1 -full ${
+                            t.priority === "high"
+                              ? "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.3)]"
+                              : t.priority === "medium"
+                                ? "bg-amber-500 shadow-[0_0_10px_rgba(245,158,11,0.3)]"
+                                : "bg-slate-500/40"
+                          }`}
+                        />
+
+                        <div className="flex items-center gap-5 flex-1 min-w-0">
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <Checkbox
+                              checked={t.completed}
+                              onCheckedChange={() =>
+                                handleAction("toggle", t.id)
+                              }
+                              className="h-6 w-6 -full data-[state=checked]:bg-emerald-500 transition-all"
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <h4
+                              className={`text-sm font-semibold truncate ${t.completed ? "line-through text-gray-600" : "text-gray-100"}`}
+                            >
+                              {t.title}
+                            </h4>
+                            <div className="flex items-center gap-4 mt-2">
+                              <Badge
+                                variant="outline"
+                                className={`${PRIORITY[t.priority].color} border-none font-black text-[9px] uppercase px-2 py-0.5 -full ring-1 ring-inset`}
+                              >
+                                {t.priority}
+                              </Badge>
+                              <span className="text-[10px] text-gray-500 font-bold uppercase flex items-center gap-1.5">
+                                <Circle className="h-1.5 w-1.5 fill-current opacity-20" />{" "}
+                                {getSmartDateLabel(t.createdAt)}
+                              </span>
+                              {new Date(t.createdAt).toDateString() ===
+                                new Date().toDateString() &&
+                                !t.completed && (
+                                  <motion.div
+                                    animate={{
+                                      scale: [1, 1.1, 1],
+                                      opacity: [0.5, 1, 0.5],
+                                    }}
+                                    transition={{
+                                      repeat: Infinity,
+                                      duration: 2,
+                                    }}
+                                    className="flex items-center gap-1 text-[9px] font-black text-amber-500 uppercase tracking-tight ml-2"
+                                  >
+                                    <Bell className="h-3 w-3 fill-amber-500/20" />{" "}
+                                    Due Today
+                                  </motion.div>
+                                )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
+                          className="flex gap-2 opacity-0 group-hover:opacity-100 transition-all transform translate-x-4 group-hover:translate-x-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => {
+                              navigator.clipboard.writeText(
+                                `${window.location.origin}/task/${t.id}`,
+                              );
+                              alert(
+                                "Task link copied! Share it with your team.",
+                              );
+                            }}
+                            className="h-10 w-10 text-gray-500 hover:text-indigo-400 hover:bg-indigo-400/10 -xl"
+                          >
+                            <Share2 className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleAction("delete", t.id)}
+                            className="h-10 w-10 text-rose-500 hover:bg-rose-500/10 -xl"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </motion.div>
+                    ))}
                   </div>
                 </div>
-                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => handleAction("toggle", t.id)}
-                    className="h-10 w-10 text-gray-500 hover:text-white -xl"
-                  >
-                    {t.completed ? (
-                      <ArrowUpCircle className="h-4 w-4" />
-                    ) : (
-                      <Check className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => handleAction("delete", t.id)}
-                    className="h-10 w-10 text-rose-500 hover:bg-rose-600 hover:text-white -xl"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="text-center py-20 text-gray-600 text-lg">
-              No tasks found.
-            </div>
+              );
+            })
           )}
         </div>
       </div>
+
+      {/* Mobile FAB */}
+      <Button
+        onClick={() => setIsAdding(true)}
+        className="fixed bottom-8 right-8 h-16 w-16 -full bg-indigo-600 hover:bg-indigo-500 text-white shadow-2xl md:hidden z-40"
+      >
+        <Plus className="h-8 w-8" />
+      </Button>
+
+      {/* Undo Toast */}
+      <AnimatePresence>
+        {undoTask && (
+          <motion.div
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-[#1a1a1a] border border-white/10 px-6 py-4 -2xl shadow-2xl flex items-center gap-6 z-50 min-w-[320px]"
+          >
+            <span className="text-sm font-medium">Task marked as done</span>
+            <Button
+              variant="link"
+              onClick={handleUndo}
+              className="text-indigo-400 font-bold ml-auto"
+            >
+              Undo
+            </Button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Side Drawer */}
+      <AnimatePresence>
+        {editingTask && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setEditingTask(null)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              className="fixed top-0 right-0 h-full w-full max-w-sm bg-[#0d0d0d] border-l border-white/5 z-[70] p-6 shadow-2xl space-y-6"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-black uppercase tracking-widest">
+                  Edit Task
+                </h2>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setEditingTask(null)}
+                >
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500 tracking-widest">
+                    Title
+                  </label>
+                  <Input
+                    value={editingTask.title}
+                    onChange={(e) =>
+                      setEditingTask({ ...editingTask, title: e.target.value })
+                    }
+                    className="h-11 bg-white/5 border-white/5 -xl text-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500 tracking-widest">
+                    Description
+                  </label>
+                  <textarea
+                    value={editingTask.description || ""}
+                    onChange={(e) =>
+                      setEditingTask({
+                        ...editingTask,
+                        description: e.target.value,
+                      })
+                    }
+                    className="w-full min-h-[100px] bg-white/5 border-white/5 -xl p-3 text-sm text-white focus:outline-none focus:bg-white/10 transition-all resize-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500 tracking-widest">
+                    Priority
+                  </label>
+                  <div className="flex gap-2">
+                    {(["low", "medium", "high"] as const).map((p) => (
+                      <button
+                        key={p}
+                        onClick={() =>
+                          setEditingTask({ ...editingTask, priority: p })
+                        }
+                        className={`flex-1 py-3 -xl text-[9px] font-black border uppercase transition-all ${
+                          editingTask.priority === p
+                            ? PRIORITY[p].color + " border-white/10 shadow-lg"
+                            : "bg-white/5 text-gray-600 border-transparent"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-4 pt-4 border-t border-white/5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-indigo-500/10 rounded-lg">
+                        <Users className="h-4 w-4 text-indigo-400" />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase text-gray-500 tracking-widest">
+                          Team Collaboration
+                        </p>
+                        <p className="text-[9px] text-gray-600 font-bold">
+                          Only you can see this currently
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-[9px] font-black uppercase border-white/5 bg-white/5 hover:bg-white/10 active:scale-95"
+                      onClick={() => alert("Team invites coming soon!")}
+                    >
+                      Invite
+                    </Button>
+                  </div>
+                </div>
+
+                <Button
+                  className="w-full h-12 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm -xl mt-4"
+                  onClick={async () => {
+                    const supabase = createClient();
+                    setTasks(
+                      tasks.map((t) =>
+                        t.id === editingTask.id ? editingTask : t,
+                      ),
+                    );
+                    await supabase
+                      .from("tasks")
+                      .update({
+                        title: editingTask.title,
+                        description: editingTask.description,
+                        priority: editingTask.priority,
+                      })
+                      .eq("id", editingTask.id);
+                    setEditingTask(null);
+                  }}
+                >
+                  Save Changes
+                </Button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

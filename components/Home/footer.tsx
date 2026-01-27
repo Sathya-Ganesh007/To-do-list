@@ -62,7 +62,7 @@ export function Footer() {
             <ul className="space-y-2 text-sm">
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   About
@@ -70,7 +70,7 @@ export function Footer() {
               </li>
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Blog
@@ -78,7 +78,7 @@ export function Footer() {
               </li>
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Careers
@@ -91,7 +91,7 @@ export function Footer() {
             <ul className="space-y-2 text-sm">
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Help Center
@@ -99,7 +99,7 @@ export function Footer() {
               </li>
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Contact
@@ -107,7 +107,7 @@ export function Footer() {
               </li>
               <li>
                 <Link
-                  href="#"
+                  href="/coming-soon"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Privacy Policy
